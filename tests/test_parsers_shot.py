@@ -227,3 +227,103 @@ class TestBinaryShotParser:
         assert shot.sample_count == 2
         assert shot.incomplete == True
         assert len(shot.samples) == 2
+
+    # ------------------------------------------------------------------
+    # Shot log v6/v7 layout.
+    # v6 widened the tick field from uint16 (sample index) to uint32
+    # (elapsed ms); v7 added 'wp' (cumulative water pumped) as field bit 13.
+    # Getting either wrong misaligns every subsequent field, so these tests
+    # pin the record size as well as the values.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_v5plus_header(version, fields_mask, sample_count,
+                             sample_interval, duration):
+        """Build a valid 512-byte v5+ header."""
+        header = struct.pack(
+            '<IBBHHHIIII',
+            0x544F4853, version, 30 if version >= 7 else 26,
+            512, sample_interval, 0,
+            fields_mask, sample_count, duration, 1789000000,
+        )
+        header += struct.pack('<32s', b'v7test')
+        header += struct.pack('<48s', b'V7 Profile')
+        header += struct.pack('<H', 0)
+        return header + b'\x00' * (512 - len(header))
+
+    def test_parse_v7_water_pumped_and_millisecond_tick(self):
+        """v7: 30-byte samples, absolute ms tick, and 'wp' decoded."""
+        all_fields_mask = 0x3FFF  # bits 0..13
+        samples = [
+            struct.pack('<IHHHHhhhhHHHHH', 0, 925, 930, 0, 90,
+                        0, 0, 0, 0, 0, 0, 0, 1, 0),
+            struct.pack('<IHHHHhhhhHHHHH', 250, 925, 931, 0, 90,
+                        120, 0, 110, 0, 0, 0, 100, 1, 55),
+            struct.pack('<IHHHHhhhhHHHHH', 500, 925, 932, 0, 90,
+                        121, 0, 118, 0, 360, 361, 101, 1, 110),
+        ]
+        data = (self._build_v5plus_header(7, all_fields_mask, 3, 250, 32394)
+                + b''.join(samples))
+
+        shot = parse_binary_shot(data, "000000")
+
+        assert shot.version == 7
+        assert shot.sample_count == 3
+        assert shot.incomplete is False
+
+        # All 14 fields decoded, including the v7 addition.
+        assert set(shot.samples[0]) >= {
+            't', 'tt', 'ct', 'tp', 'cp', 'fl', 'tf', 'pf',
+            'vf', 'v', 'ev', 'pr', 'systemInfo', 'wp',
+        }
+
+        # Tick is elapsed milliseconds, not a sample index.
+        assert [s['t'] for s in shot.samples] == [0, 250, 500]
+
+        # Water pumped is 0.1 ml resolution.
+        assert [s['wp'] for s in shot.samples] == [0.0, 5.5, 11.0]
+        assert shot.samples[2]['tt'] == 92.5
+
+    def test_parse_v5_tick_stays_sample_index(self):
+        """v5 must keep the old 26-byte layout and derived tick."""
+        v5_mask = 0x1FFF  # bits 0..12, no water pumped
+        samples = [
+            struct.pack('<HHHHHhhhhHHHH', i, 925, 930, 0, 90,
+                        120, 0, 110, 0, 0, 0, 100, 1)
+            for i in range(3)
+        ]
+        data = (self._build_v5plus_header(5, v5_mask, 3, 250, 750)
+                + b''.join(samples))
+
+        shot = parse_binary_shot(data, "v5test")
+
+        assert shot.version == 5
+        assert shot.sample_count == 3
+        assert 'wp' not in shot.samples[0]
+        # v5 stores a sample index; the parser multiplies by the interval.
+        assert [s['t'] for s in shot.samples] == [0, 250, 500]
+
+    def test_newer_layout_raises_instead_of_returning_garbage(self):
+        """A file bigger than the declared layout must fail loudly.
+
+        Silently misaligned samples are how the v6/v7 format bump went
+        unnoticed, so the parser refuses rather than guessing.
+        """
+        import pytest
+
+        all_fields_mask = 0x3FFF
+        samples = [
+            struct.pack('<IHHHHhhhhHHHHH', i * 250, 925, 930, 0, 90,
+                        120, 0, 110, 0, 0, 0, 100, 1, 55)
+            for i in range(3)
+        ]
+        data = (self._build_v5plus_header(7, all_fields_mask, 3, 250, 750)
+                + b''.join(samples))
+
+        # Re-declare the same body as a v5 file: 14 fields x 2 bytes predicts
+        # a smaller file than the 30-byte records actually present.
+        mislabelled = bytearray(data)
+        struct.pack_into('<B', mislabelled, 4, 5)
+
+        with pytest.raises(ValueError, match="layout mismatch"):
+            parse_binary_shot(bytes(mislabelled), "mislabelled")
