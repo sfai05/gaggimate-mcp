@@ -551,6 +551,13 @@ _PRESSURE_OVERSHOOT_BANDS: list[tuple[float, str]] = [
     (float('inf'), "SEVERE_OVERSHOOT"),
 ]
 
+# Minimum time a pressure/flow deviation must hold before it counts toward
+# the overshoot/undershoot verdict. Brief spikes — a group flush, or residual
+# pressure bleeding off as a shot starts — are not profile-tracking failures.
+# A genuine deviation (grind too fine, dose too high) persists for most of the
+# extraction, so one second separates the two cleanly.
+_MIN_DEVIATION_DURATION_S = 1.0
+
 _FLOW_DEVIATION_BANDS: list[tuple[float, str]] = [
     (0.3, "WITHIN_TOLERANCE"),
     (0.7, "MINOR_DEVIATION"),
@@ -1424,6 +1431,51 @@ def compute_shot_diagnostics(
     )
 
 
+def _sustained_extreme(
+    deviations: list[float], dt: float,
+) -> tuple[float, float]:
+    """Largest positive and negative deviation that persists long enough.
+
+    A deviation must stay on the same side of the target for at least
+    ``_MIN_DEVIATION_DURATION_S`` before it counts toward the overshoot or
+    undershoot verdict.
+
+    Rationale: brief excursions are usually not profile-tracking failures.
+    A group flush, or residual pressure bleeding off as a shot starts,
+    produces a short spike that a raw ``max()`` reports as a severe
+    overshoot.  Temperature is deliberately NOT filtered this way — a short
+    hot spike can still scorch the puck, so it stays sensitive.
+
+    Returns ``(max_sustained_overshoot, max_sustained_undershoot)``.
+    """
+    min_run = max(2, round(_MIN_DEVIATION_DURATION_S / dt)) if dt > 0 else 2
+
+    over = under = 0.0
+    run_over = run_under = 0
+    peak_over = peak_under = 0.0
+
+    for d in deviations:
+        if d > 0:
+            run_over += 1
+            peak_over = max(peak_over, d)
+            run_under = 0
+            peak_under = 0.0
+            if run_over >= min_run:
+                over = max(over, peak_over)
+        elif d < 0:
+            run_under += 1
+            peak_under = max(peak_under, -d)
+            run_over = 0
+            peak_over = 0.0
+            if run_under >= min_run:
+                under = max(under, peak_under)
+        else:
+            run_over = run_under = 0
+            peak_over = peak_under = 0.0
+
+    return over, under
+
+
 def _compute_profile_compliance(
     samples: list[dict], dt: float,
 ) -> Optional[ProfileComplianceMetrics]:
@@ -1444,8 +1496,8 @@ def _compute_profile_compliance(
     p_rmse = _round2(_compute_rmse(p_actual, p_target))
 
     deviations = [a - t for a, t in p_pairs]
-    max_overshoot = _round2(max(0.0, max(deviations)))
-    max_undershoot = _round2(max(0.0, abs(min(deviations))))
+    max_overshoot = _round2(_sustained_extreme(deviations, dt)[0])
+    max_undershoot = _round2(_sustained_extreme(deviations, dt)[1])
 
     # Flow compliance (optional — tf may not always be set)
     f_pairs = [(s.get('pf', 0.0), s['tf']) for s in samples if s.get('tf', 0.0) > 0]
@@ -1456,9 +1508,11 @@ def _compute_profile_compliance(
         f_rmse = _round2(_compute_rmse(
             [a for a, _ in f_pairs], [t for _, t in f_pairs],
         ))
-        f_deviations = [a - t for a, t in f_pairs]
-        max_flow_overshoot = _round2(max(0.0, max(f_deviations)))
-        max_flow_undershoot = _round2(max(0.0, abs(min(f_deviations))))
+        f_over, f_under = _sustained_extreme(
+            [a - t for a, t in f_pairs], dt,
+        )
+        max_flow_overshoot = _round2(f_over)
+        max_flow_undershoot = _round2(f_under)
 
     annotations: dict[str, str] = {
         "pressure_adherence": _annotate_ascending(
@@ -1652,8 +1706,9 @@ def compute_summary_diagnostics(
         p_rmse = _round2(_compute_rmse(
             [a for a, _ in p_targets], [t for _, t in p_targets],
         ))
-        devs = [a - t for a, t in p_targets]
-        max_overshoot = _round2(max(0.0, max(devs)))
+        max_overshoot = _round2(
+            _sustained_extreme([a - t for a, t in p_targets], dt)[0]
+        )
 
     # Flow compliance (optional — tf may not always be set)
     f_rmse: Optional[float] = None
@@ -1663,8 +1718,9 @@ def compute_summary_diagnostics(
         f_rmse = _round2(_compute_rmse(
             [a for a, _ in f_targets], [t for _, t in f_targets],
         ))
-        f_devs = [a - t for a, t in f_targets]
-        max_flow_overshoot = _round2(max(0.0, max(f_devs)))
+        max_flow_overshoot = _round2(
+            _sustained_extreme([a - t for a, t in f_targets], dt)[0]
+        )
 
     # Scale
     has_scale = any(w > 0 for w in brew_weights)

@@ -929,16 +929,24 @@ class TestProfileCompliance:
         assert diag['profile_compliance'] is None
 
     def test_overshoot_detected(self):
-        """Overshoot correctly detected when actual exceeds target."""
+        """Overshoot correctly detected when actual exceeds target.
+
+        The deviation is held for four samples (1.0 s at 250 ms cadence) —
+        the minimum duration a deviation must persist to count. Shorter
+        spikes are treated as flush transients, covered separately in
+        TestDiagnosticsDoNotOverstate.
+        """
         samples = [
             {'t': 0, 'ct': 93.0, 'tt': 93.0, 'cp': 3.0, 'tp': 3.0, 'pf': 0.5},
-            {'t': 100, 'ct': 93.0, 'tt': 93.0, 'cp': 11.0, 'tp': 9.0, 'pf': 1.0},  # +2 bar
-            {'t': 200, 'ct': 93.0, 'tt': 93.0, 'cp': 10.5, 'tp': 9.0, 'pf': 2.0},  # +1.5 bar
-            {'t': 300, 'ct': 93.0, 'tt': 93.0, 'cp': 9.0, 'tp': 9.0, 'pf': 2.0},
-            {'t': 400, 'ct': 93.0, 'tt': 93.0, 'cp': 8.5, 'tp': 9.0, 'pf': 2.0},
-            {'t': 500, 'ct': 93.0, 'tt': 93.0, 'cp': 8.0, 'tp': 9.0, 'pf': 2.1},
+            {'t': 250, 'ct': 93.0, 'tt': 93.0, 'cp': 11.0, 'tp': 9.0, 'pf': 1.0},  # +2 bar
+            {'t': 500, 'ct': 93.0, 'tt': 93.0, 'cp': 10.5, 'tp': 9.0, 'pf': 2.0},  # +1.5 bar
+            {'t': 750, 'ct': 93.0, 'tt': 93.0, 'cp': 10.4, 'tp': 9.0, 'pf': 2.0},
+            {'t': 1000, 'ct': 93.0, 'tt': 93.0, 'cp': 10.2, 'tp': 9.0, 'pf': 2.0},
+            {'t': 1250, 'ct': 93.0, 'tt': 93.0, 'cp': 9.0, 'tp': 9.0, 'pf': 2.0},
+            {'t': 1500, 'ct': 93.0, 'tt': 93.0, 'cp': 8.5, 'tp': 9.0, 'pf': 2.0},
+            {'t': 1750, 'ct': 93.0, 'tt': 93.0, 'cp': 8.0, 'tp': 9.0, 'pf': 2.1},
         ]
-        shot = self._make_shot(samples)
+        shot = self._make_shot(samples, sample_interval=250)
         diag = compute_shot_diagnostics(shot)
         pc = diag['profile_compliance']
         assert pc['max_pressure_overshoot_bar'] == 2.0
@@ -964,12 +972,14 @@ class TestProfileCompliance:
         """Flow overshoot correctly detected when actual exceeds target."""
         samples = [
             {'t': 0, 'ct': 93.0, 'tt': 93.0, 'cp': 9.0, 'tp': 9.0, 'pf': 2.0, 'tf': 1.0},
-            {'t': 100, 'ct': 93.0, 'tt': 93.0, 'cp': 9.0, 'tp': 9.0, 'pf': 3.0, 'tf': 1.0},  # +2.0 ml/s
-            {'t': 200, 'ct': 93.0, 'tt': 93.0, 'cp': 8.5, 'tp': 9.0, 'pf': 2.5, 'tf': 1.0},  # +1.5 ml/s
-            {'t': 300, 'ct': 93.0, 'tt': 93.0, 'cp': 8.0, 'tp': 9.0, 'pf': 1.2, 'tf': 1.0},
-            {'t': 400, 'ct': 93.0, 'tt': 93.0, 'cp': 7.5, 'tp': 9.0, 'pf': 1.0, 'tf': 1.0},
+            {'t': 250, 'ct': 93.0, 'tt': 93.0, 'cp': 9.0, 'tp': 9.0, 'pf': 3.0, 'tf': 1.0},  # +2.0 ml/s
+            {'t': 500, 'ct': 93.0, 'tt': 93.0, 'cp': 8.5, 'tp': 9.0, 'pf': 2.5, 'tf': 1.0},  # +1.5 ml/s
+            {'t': 750, 'ct': 93.0, 'tt': 93.0, 'cp': 8.0, 'tp': 9.0, 'pf': 2.4, 'tf': 1.0},
+            {'t': 1000, 'ct': 93.0, 'tt': 93.0, 'cp': 8.0, 'tp': 9.0, 'pf': 2.3, 'tf': 1.0},
+            {'t': 1250, 'ct': 93.0, 'tt': 93.0, 'cp': 8.0, 'tp': 9.0, 'pf': 1.2, 'tf': 1.0},
+            {'t': 1500, 'ct': 93.0, 'tt': 93.0, 'cp': 7.5, 'tp': 9.0, 'pf': 1.0, 'tf': 1.0},
         ]
-        shot = self._make_shot(samples)
+        shot = self._make_shot(samples, sample_interval=250)
         diag = compute_shot_diagnostics(shot)
         pc = diag['profile_compliance']
         assert pc['max_flow_overshoot_ml_s'] == 2.0
@@ -979,12 +989,14 @@ class TestProfileCompliance:
         """Flow undershoot correctly detected when actual is below target."""
         samples = [
             {'t': 0, 'ct': 93.0, 'tt': 93.0, 'cp': 9.0, 'tp': 9.0, 'pf': 2.0, 'tf': 2.0},
-            {'t': 100, 'ct': 93.0, 'tt': 93.0, 'cp': 9.0, 'tp': 9.0, 'pf': 1.0, 'tf': 2.0},  # -1.0 ml/s
-            {'t': 200, 'ct': 93.0, 'tt': 93.0, 'cp': 8.5, 'tp': 9.0, 'pf': 1.2, 'tf': 2.0},  # -0.8 ml/s
-            {'t': 300, 'ct': 93.0, 'tt': 93.0, 'cp': 8.0, 'tp': 9.0, 'pf': 1.8, 'tf': 2.0},
+            {'t': 250, 'ct': 93.0, 'tt': 93.0, 'cp': 9.0, 'tp': 9.0, 'pf': 1.0, 'tf': 2.0},  # -1.0 ml/s
+            {'t': 500, 'ct': 93.0, 'tt': 93.0, 'cp': 8.5, 'tp': 9.0, 'pf': 1.2, 'tf': 2.0},  # -0.8 ml/s
+            {'t': 750, 'ct': 93.0, 'tt': 93.0, 'cp': 8.0, 'tp': 9.0, 'pf': 1.3, 'tf': 2.0},
+            {'t': 1000, 'ct': 93.0, 'tt': 93.0, 'cp': 8.0, 'tp': 9.0, 'pf': 1.4, 'tf': 2.0},
+            {'t': 1250, 'ct': 93.0, 'tt': 93.0, 'cp': 8.0, 'tp': 9.0, 'pf': 1.8, 'tf': 2.0},
             {'t': 400, 'ct': 93.0, 'tt': 93.0, 'cp': 7.5, 'tp': 9.0, 'pf': 1.9, 'tf': 2.0},
         ]
-        shot = self._make_shot(samples)
+        shot = self._make_shot(samples, sample_interval=250)
         diag = compute_shot_diagnostics(shot)
         pc = diag['profile_compliance']
         assert pc['max_flow_undershoot_ml_s'] == 1.0
@@ -1684,3 +1696,48 @@ class TestDiagnosticsDoNotOverstate:
         assert summary['resistance_avg'] == full['resistance']['avg']
         assert (summary['pressure_rmse_bar']
                 == full['profile_compliance']['pressure_rmse_bar'])
+
+    def test_brief_flush_spike_is_not_an_overshoot(self):
+        """A brief opening spike must not read as a profile deviation.
+
+        Reproduces the real shot: the first two samples read cp=2.40 against
+        a 1.10 bar preinfusion target. That is residual pressure from a group
+        flush bleeding off, not a failure to follow the profile, but a raw
+        max() reported +1.3 bar and SEVERE_OVERSHOOT. Two samples at the
+        device's 250 ms cadence is 0.5 s, below the 1.0 s threshold.
+        """
+        spike = [
+            {'t': 0, 'cp': 2.40, 'tp': 1.10, 'pf': 0.0, 'tf': 0.0,
+             'ct': 100.7, 'tt': 92.5},
+            {'t': 250, 'cp': 2.40, 'tp': 1.10, 'pf': 0.0, 'tf': 0.0,
+             'ct': 100.7, 'tt': 92.5},
+        ]
+        steady = [
+            {'t': 500 + i * 250, 'cp': 1.10, 'tp': 1.10, 'pf': 0.0, 'tf': 0.0,
+             'ct': 97.5, 'tt': 92.5}
+            for i in range(10)
+        ]
+        diag = compute_shot_diagnostics(
+            self._make_shot(spike + steady, sample_interval=250),
+        )
+
+        assert diag is not None
+        c = diag['profile_compliance']
+        assert c['max_pressure_overshoot_bar'] == 0.0
+        assert c['annotations']['pressure_overshoot'] == 'WITHIN_TOLERANCE'
+
+    def test_sustained_overshoot_is_still_detected(self):
+        """The duration filter must not hide a genuine, sustained deviation."""
+        samples = [
+            {'t': i * 250, 'cp': 11.0, 'tp': 9.0, 'pf': 2.0, 'tf': 0.0,
+             'ct': 93.0, 'tt': 92.5}
+            for i in range(10)
+        ]
+        diag = compute_shot_diagnostics(
+            self._make_shot(samples, sample_interval=250),
+        )
+
+        assert diag is not None
+        c = diag['profile_compliance']
+        assert c['max_pressure_overshoot_bar'] == 2.0
+        assert c['annotations']['pressure_overshoot'] == 'SEVERE_OVERSHOOT'
