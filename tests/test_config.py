@@ -13,8 +13,8 @@ class TestGaggimateConfig:
         assert config.gaggimate_host == "gaggimate.local"
         assert config.gaggimate_protocol == "ws"
         assert config.request_timeout == 15.0
-        assert config.max_temperature == 96.0
-        assert config.min_temperature == 60.0
+        assert config.max_temperature == 100.0
+        assert config.min_temperature == 25.0
         assert config.max_pressure == 12.0
         assert config.min_pressure == 0.0
 
@@ -52,14 +52,19 @@ class TestGaggimateConfig:
     def test_temperature_clamping_max(self):
         """Test temperature is clamped to maximum limit."""
         config = GaggimateConfig()
-        assert config.validate_temperature(100.0) == 96.0
-        assert config.validate_temperature(97.0) == 96.0
+        assert config.max_temperature == 100.0
+        assert config.validate_temperature(150.0) == 100.0
+        assert config.validate_temperature(100.5) == 100.0
+        # A brew target plus the display temperature offset must survive
+        # unclamped: a 92.5C profile with a 5C offset targets 97.5C.
+        assert config.validate_temperature(97.5) == 97.5
 
     def test_temperature_clamping_min(self):
         """Test temperature is clamped to minimum limit."""
         config = GaggimateConfig()
-        assert config.validate_temperature(50.0) == 60.0
-        assert config.validate_temperature(55.0) == 60.0
+        assert config.min_temperature == 25.0
+        assert config.validate_temperature(0.0) == 25.0
+        assert config.validate_temperature(24.9) == 25.0
 
     def test_temperature_within_range(self):
         """Test temperature within range is unchanged."""
