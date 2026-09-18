@@ -553,7 +553,10 @@ async def analyze_shot(shot_id: str, detail: str = "summary") -> str:
 
         # Transform for AI analysis
         detail_level = detail if detail in VALID_DETAIL_LEVELS else "summary"
-        transformed = transform_shot_for_ai(shot_data, detail=detail_level)
+        transformed = transform_shot_for_ai(
+            shot_data, detail=detail_level,
+            temperature_offset=config.temperature_offset,
+        )
 
         # Get rating if available (using normalized ID)
         rating_data = rating_storage.get_rating(normalized_id)

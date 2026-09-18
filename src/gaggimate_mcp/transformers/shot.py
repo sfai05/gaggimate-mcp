@@ -762,6 +762,31 @@ def _strip_flow_edges(
     )
 
 
+def _steady_state_window(
+    pressures: list[float],
+    flows: list[float],
+    samples: list[dict],
+) -> tuple[list[float], list[float], list[dict], int, int]:
+    """Trim a brew phase down to its steady-state window.
+
+    Applies the same two-step trim the channeling analysis uses: a
+    pressure-based ramp-up trim, then removal of leading/trailing
+    zero-flow samples.
+
+    Returns ``(pressures, flows, samples, ramp_excluded, edge_excluded)``.
+
+    Puck resistance (P/F²) only means something once flow is established.
+    During the ramp a barely-open valve with rising pressure yields a huge,
+    meaningless ratio, which is what pushes an otherwise healthy shot to a
+    false ``VERY_HIGH`` resistance verdict.  Trimming keeps the metric
+    measuring the puck instead of the ramp.
+    """
+    ss_p, ss_f, ss_s = _trim_ramp_up(pressures, flows, samples)
+    ramp_excluded = len(pressures) - len(ss_p)
+    ss_p, ss_f, ss_s, (lead, tail) = _strip_flow_edges(ss_p, ss_f, ss_s)
+    return ss_p, ss_f, ss_s, ramp_excluded, lead + tail
+
+
 def _linear_slope(values: list[float], dt: float) -> float:
     """Calculate linear regression slope (units per second).
 
@@ -1202,13 +1227,22 @@ def _classify_phase(
     return "brew"
 
 
-def compute_shot_diagnostics(shot: ShotData) -> Optional[ShotDiagnostics]:
+def compute_shot_diagnostics(
+    shot: ShotData, temperature_offset: float = 0.0,
+) -> Optional[ShotDiagnostics]:
     """Compute diagnostic features from shot telemetry data.
 
     Pre-computes physics-informed features with interpretive annotations
     for optimal LLM reasoning. Features are grouped by diagnostic purpose:
     puck resistance, channeling indicators, temperature stability,
     extraction quality, and weight/yield analysis.
+
+    Args:
+        shot: Parsed shot data.
+        temperature_offset: The machine's configured temperature offset in
+            degrees C.  ``.slog`` temperatures are raw thermocouple values,
+            so the boiler legitimately sits at (target + offset); pass the
+            real offset to avoid reporting the offset itself as overshoot.
 
     Returns None if insufficient data for meaningful analysis (< 5 total
     samples or < 3 brew-phase samples).
@@ -1237,9 +1271,17 @@ def compute_shot_diagnostics(shot: ShotData) -> Optional[ShotDiagnostics]:
     has_scale = any(w > 0 for w in brew_weights)
 
     # ── PUCK RESISTANCE (the master diagnostic) ──────────────
-    # R = P / F² (quadratic Darcy model)
+    # R = P / F² (quadratic Darcy model), measured over the steady-state
+    # window only.  A rising-pressure / barely-flowing ramp produces a huge
+    # spurious ratio that would otherwise dominate both the average and the
+    # peak, and the trailing post-cutoff samples carry trapped pressure with
+    # no flow.
+    ss_pressures, ss_flows, _ss_samples, r_ramp_excl, r_edge_excl = (
+        _steady_state_window(brew_pressures, brew_flows, brew_samples)
+    )
+
     resistance_values: list[float] = []
-    for p, f in zip(brew_pressures, brew_flows):
+    for p, f in zip(ss_pressures, ss_flows):
         if f > 0.1:  # Skip near-zero flow to avoid division artifacts
             resistance_values.append(p / (f * f))
 
@@ -1271,6 +1313,10 @@ def compute_shot_diagnostics(shot: ShotData) -> Optional[ShotDiagnostics]:
             "saturation": _annotate_ascending(
                 r_peak_timing, _RESISTANCE_PEAK_TIMING_BANDS
             ),
+            "window": (
+                "steady-state only; excluded "
+                f"{r_ramp_excl} ramp-up and {r_edge_excl} zero-flow edge samples"
+            ),
         },
     )
 
@@ -1280,8 +1326,13 @@ def compute_shot_diagnostics(shot: ShotData) -> Optional[ShotDiagnostics]:
     )
 
     # ── TEMPERATURE DIAGNOSTICS ──────────────────────────────
+    # The .slog records the RAW boiler-wall thermocouple value, but the
+    # firmware holds the boiler at (profile target + temperatureOffset).  So
+    # comparing raw against the bare target inflates every reading by the
+    # offset and makes a healthy machine look permanently overheated.  The
+    # offset is removed here before judging overshoot/undershoot.
     temp_deviations = [
-        ct - tt
+        ct - (tt + temperature_offset)
         for ct, tt in zip(brew_temps, brew_target_temps)
         if tt > 0  # Skip if no target temp recorded
     ]
@@ -1301,6 +1352,11 @@ def compute_shot_diagnostics(shot: ShotData) -> Optional[ShotDiagnostics]:
                 max(0.0, t_undershoot), _TEMP_OVERSHOOT_BANDS
             ),
             "stability": _annotate_ascending(t_std, _TEMP_STABILITY_BANDS),
+            "baseline": (
+                f"raw .slog value compared against profile target + {temperature_offset:g}C offset"
+                if temperature_offset
+                else "raw .slog value compared against profile target (no offset configured)"
+            ),
         },
     )
 
@@ -1379,7 +1435,7 @@ def _compute_profile_compliance(
     indicates grind too fine, excessive dose, or a puck preparation issue.
     """
     # Only include samples where target pressure was recorded
-    p_pairs = [(s.get('cp', 0.0), s['tp']) for s in samples if 'tp' in s]
+    p_pairs = [(s.get('cp', 0.0), s['tp']) for s in samples if s.get('tp', 0.0) > 0]
     if len(p_pairs) < 3:
         return None
 
@@ -1392,7 +1448,7 @@ def _compute_profile_compliance(
     max_undershoot = _round2(max(0.0, abs(min(deviations))))
 
     # Flow compliance (optional — tf may not always be set)
-    f_pairs = [(s.get('pf', 0.0), s['tf']) for s in samples if 'tf' in s]
+    f_pairs = [(s.get('pf', 0.0), s['tf']) for s in samples if s.get('tf', 0.0) > 0]
     f_rmse: Optional[float] = None
     max_flow_overshoot: Optional[float] = None
     max_flow_undershoot: Optional[float] = None
@@ -1454,12 +1510,12 @@ def _compute_phase_diagnostics(
     avg_f = _round2(_safe_mean(flows))
 
     # Per-phase RMSE vs target
-    p_pairs = [(s.get('cp', 0.0), s['tp']) for s in phase_samples if 'tp' in s]
+    p_pairs = [(s.get('cp', 0.0), s['tp']) for s in phase_samples if s.get('tp', 0.0) > 0]
     p_rmse = _round2(_compute_rmse(
         [a for a, _ in p_pairs], [t for _, t in p_pairs],
     )) if p_pairs else 0.0
 
-    f_pairs = [(s.get('pf', 0.0), s['tf']) for s in phase_samples if 'tf' in s]
+    f_pairs = [(s.get('pf', 0.0), s['tf']) for s in phase_samples if s.get('tf', 0.0) > 0]
     f_rmse = _round2(_compute_rmse(
         [a for a, _ in f_pairs], [t for _, t in f_pairs],
     )) if f_pairs else 0.0
@@ -1545,10 +1601,17 @@ def _compute_phase_diagnostics(
     return result
 
 
-def compute_summary_diagnostics(shot: ShotData) -> Optional[SummaryDiagnostics]:
+def compute_summary_diagnostics(
+    shot: ShotData, temperature_offset: float = 0.0,
+) -> Optional[SummaryDiagnostics]:
     """Compute lightweight diagnostics for the summary detail level.
 
     Returns only key indicators an LLM needs for a quick assessment.
+
+    Args:
+        shot: Parsed shot data.
+        temperature_offset: Machine temperature offset in degrees C, used to
+            compare raw ``.slog`` temperatures against (target + offset).
     """
     samples = shot.samples
     if not samples or len(samples) < 5:
@@ -1564,8 +1627,12 @@ def compute_summary_diagnostics(shot: ShotData) -> Optional[SummaryDiagnostics]:
     brew_temps = [s.get('ct', 0.0) for s in brew_samples]
     brew_weights = [s.get('v', 0.0) for s in brew_samples]
 
-    # Resistance
-    r_values = [p / (f * f) for p, f in zip(brew_pressures, brew_flows) if f > 0.1]
+    # Resistance — same steady-state window as the full diagnostics, so the
+    # summary and the detailed output cannot disagree about puck resistance.
+    ss_pressures, ss_flows, _ss_samples, _r_ramp, _r_edge = _steady_state_window(
+        brew_pressures, brew_flows, brew_samples,
+    )
+    r_values = [p / (f * f) for p, f in zip(ss_pressures, ss_flows) if f > 0.1]
     r_avg = _round2(_safe_mean(r_values))
     r_slope = _round2(_linear_slope(r_values, dt))
 
@@ -1580,7 +1647,7 @@ def compute_summary_diagnostics(shot: ShotData) -> Optional[SummaryDiagnostics]:
     # Profile compliance
     p_rmse = 0.0
     max_overshoot = 0.0
-    p_targets = [(s.get('cp', 0.0), s['tp']) for s in brew_samples if 'tp' in s]
+    p_targets = [(s.get('cp', 0.0), s['tp']) for s in brew_samples if s.get('tp', 0.0) > 0]
     if p_targets:
         p_rmse = _round2(_compute_rmse(
             [a for a, _ in p_targets], [t for _, t in p_targets],
@@ -1591,7 +1658,7 @@ def compute_summary_diagnostics(shot: ShotData) -> Optional[SummaryDiagnostics]:
     # Flow compliance (optional — tf may not always be set)
     f_rmse: Optional[float] = None
     max_flow_overshoot: Optional[float] = None
-    f_targets = [(s.get('pf', 0.0), s['tf']) for s in brew_samples if 'tf' in s]
+    f_targets = [(s.get('pf', 0.0), s['tf']) for s in brew_samples if s.get('tf', 0.0) > 0]
     if len(f_targets) >= 3:
         f_rmse = _round2(_compute_rmse(
             [a for a, _ in f_targets], [t for _, t in f_targets],
@@ -1644,6 +1711,7 @@ VALID_DETAIL_LEVELS = ("summary", "per_phase", "per_phase_detailed")
 
 def transform_shot_for_ai(
     shot: ShotData, detail: str = "summary",
+    temperature_offset: float = 0.0,
 ) -> TransformedShot:
     """Transform shot data for AI analysis.
 
@@ -1676,13 +1744,19 @@ def transform_shot_for_ai(
 
     if detail == "summary":
         phases = _build_phases(shot, include_samples=False, include_diagnostics=False, dt=dt)
-        diagnostics: Optional[ShotDiagnostics | SummaryDiagnostics] = compute_summary_diagnostics(shot)
+        diagnostics: Optional[ShotDiagnostics | SummaryDiagnostics] = compute_summary_diagnostics(
+            shot, temperature_offset=temperature_offset,
+        )
     elif detail == "per_phase":
         phases = _build_phases(shot, include_samples=False, include_diagnostics=True, dt=dt)
-        diagnostics = compute_shot_diagnostics(shot)
+        diagnostics = compute_shot_diagnostics(
+            shot, temperature_offset=temperature_offset,
+        )
     else:  # per_phase_detailed
         phases = _build_phases(shot, include_samples=True, include_diagnostics=True, dt=dt)
-        diagnostics = compute_shot_diagnostics(shot)
+        diagnostics = compute_shot_diagnostics(
+            shot, temperature_offset=temperature_offset,
+        )
 
     return TransformedShot(
         shot_id=shot.id,

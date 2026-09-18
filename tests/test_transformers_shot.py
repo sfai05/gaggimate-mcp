@@ -1547,3 +1547,140 @@ class TestChannelingRegressionFixtures:
         c = d['channeling']
         assert c['channeling_risk'] == "LOW"
         assert c['flow_jitter_ml_s'] < 0.025
+
+
+class TestDiagnosticsDoNotOverstate:
+    """Regression guards for annotations that overstated real-machine shots.
+
+    Every case below reproduces a measurement taken on a real GaggiMate Pro
+    (Cremina lever profile, nightly firmware, 92.5C target with a 5C offset)
+    where the diagnostics reported a far worse shot than the telemetry
+    supported.
+    """
+
+    @staticmethod
+    def _make_shot(samples, phases=None, **kwargs):
+        defaults = dict(
+            id='000200', version=7, fields_mask=0x3FFF,
+            sample_count=len(samples), sample_interval=100,
+            profile_id='lever', profile_name='Cremina lever machine',
+            timestamp=1789720878, rating=0, duration=30000, weight=0.0,
+        )
+        defaults.update(kwargs)
+        return ShotData(samples=samples, phases=phases or [], **defaults)
+
+    def test_resistance_ignores_ramp_up_spike(self):
+        """A barely-flowing ramp must not dominate puck resistance.
+
+        At low flow P/F2 explodes: 1.3 bar at 0.28 ml/s gives ~16.6, which
+        previously drove the level annotation to HIGH and stability to
+        VOLATILE on a shot whose steady-state resistance was ~1.6.
+        """
+        preinfusion = [
+            {'t': i * 100, 'cp': 1.1, 'pf': 0.0, 'tp': 1.1, 'tf': 0.0,
+             'ct': 93.0, 'tt': 92.5}
+            for i in range(3)
+        ]
+        ramp = [
+            {'t': 300, 'cp': 1.3, 'pf': 0.28, 'tp': 1.3, 'tf': 0.0,
+             'ct': 93.0, 'tt': 92.5},
+            {'t': 400, 'cp': 1.5, 'pf': 0.40, 'tp': 1.5, 'tf': 0.0,
+             'ct': 93.0, 'tt': 92.5},
+            {'t': 500, 'cp': 3.0, 'pf': 0.70, 'tp': 3.0, 'tf': 0.0,
+             'ct': 93.0, 'tt': 92.5},
+        ]
+        steady = [
+            {'t': 600 + i * 100, 'cp': 8.5, 'pf': 2.30, 'tp': 8.5, 'tf': 0.0,
+             'ct': 93.0, 'tt': 92.5}
+            for i in range(12)
+        ]
+        phases = [
+            PhaseTransition(sample_index=0, phase_number=0,
+                            phase_name='preinfusion start'),
+            PhaseTransition(sample_index=3, phase_number=1,
+                            phase_name='ramp'),
+        ]
+        diag = compute_shot_diagnostics(
+            self._make_shot(preinfusion + ramp + steady, phases=phases),
+        )
+
+        assert diag is not None
+        r = diag['resistance']
+        # Steady state only: 8.5 / 2.30^2 = 1.61
+        assert 1.4 < r['avg'] < 1.8
+        # The ramp spike (~16.6) must be gone
+        assert r['peak'] < 5.0
+        assert r['annotations']['level'] not in ('HIGH', 'VERY_HIGH')
+        assert r['annotations']['stability'] in ('VERY_STABLE', 'STABLE')
+        assert 'steady-state' in r['annotations']['window']
+
+    def test_compliance_ignores_samples_without_target(self):
+        """Post-cutoff samples carry trapped pressure but no target.
+
+        When a phase ends the firmware clears tp/tf to 0 while pressure is
+        still in the group. Those samples previously produced multi-bar
+        deviations and a false POOR / SEVERE_OVERSHOOT verdict.
+        """
+        brewing = [
+            {'t': i * 100, 'cp': 9.0, 'pf': 2.0, 'tp': 9.0, 'tf': 2.0,
+             'ct': 93.0, 'tt': 92.5}
+            for i in range(10)
+        ]
+        after_cutoff = [
+            {'t': 1000 + i * 100, 'cp': 8.0, 'pf': 0.0, 'tp': 0.0, 'tf': 0.0,
+             'ct': 92.5, 'tt': 92.5}
+            for i in range(3)
+        ]
+        diag = compute_shot_diagnostics(
+            self._make_shot(brewing + after_cutoff),
+        )
+
+        assert diag is not None
+        c = diag['profile_compliance']
+        assert c['pressure_rmse_bar'] == 0.0
+        assert c['max_pressure_overshoot_bar'] == 0.0
+        assert c['annotations']['pressure_adherence'] != 'POOR'
+        assert c['annotations']['pressure_overshoot'] != 'SEVERE_OVERSHOOT'
+
+    def test_temperature_offset_is_removed_from_overshoot(self):
+        """Raw .slog temps must be judged against (target + offset).
+
+        A boiler legitimately held 5C above the profile target is not
+        overheating; without the offset every sample reads 5C hot.
+        """
+        samples = [
+            {'t': i * 100, 'cp': 9.0, 'pf': 2.0, 'ct': 97.5, 'tt': 92.5}
+            for i in range(6)
+        ]
+        shot = self._make_shot(samples)
+
+        # No offset configured: the 5C is counted as overshoot.
+        no_offset = compute_shot_diagnostics(shot)
+        assert no_offset is not None
+        assert no_offset['temperature']['overshoot_c'] == 5.0
+        assert ('no offset configured'
+                in no_offset['temperature']['annotations']['baseline'])
+
+        # Correct offset: the machine is exactly on target.
+        with_offset = compute_shot_diagnostics(shot, temperature_offset=5.0)
+        assert with_offset is not None
+        assert with_offset['temperature']['overshoot_c'] == 0.0
+        assert with_offset['temperature']['undershoot_c'] == 0.0
+        assert ('5C offset'
+                in with_offset['temperature']['annotations']['baseline'])
+
+    def test_summary_and_full_paths_agree_on_resistance(self):
+        """The summary and per_phase outputs must not disagree."""
+        samples = [
+            {'t': i * 100, 'cp': 8.5, 'pf': 2.30, 'tp': 8.5, 'tf': 0.0,
+             'ct': 93.0, 'tt': 92.5}
+            for i in range(8)
+        ]
+        shot = self._make_shot(samples)
+        full = compute_shot_diagnostics(shot)
+        summary = compute_summary_diagnostics(shot)
+
+        assert full is not None and summary is not None
+        assert summary['resistance_avg'] == full['resistance']['avg']
+        assert (summary['pressure_rmse_bar']
+                == full['profile_compliance']['pressure_rmse_bar'])

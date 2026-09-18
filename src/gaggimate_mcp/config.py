@@ -27,6 +27,13 @@ class GaggimateConfig(BaseSettings):
     max_pressure: float = 12.0
     min_pressure: float = 0.0
 
+    # Shot analysis
+    # .slog temperatures are raw, uncompensated thermocouple readings, while
+    # the firmware holds the boiler at (profile target + temperatureOffset).
+    # Set this to the machine's configured offset so overshoot is not
+    # overstated by the offset itself. Env: GAGGIMATE_TEMPERATURE_OFFSET.
+    temperature_offset: float = 0.0
+
     # Storage
     profiles_dir: Path = Path("./profiles")
     storage_path: Path = Path("./data")
