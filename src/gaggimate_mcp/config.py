@@ -37,7 +37,7 @@ class GaggimateConfig(BaseSettings):
     user_dir: Path = Path("./user")
 
     # Agent settings
-    ai_profile_suffix: str = " [AI]"
+    ai_profile_suffix: str = ""
     ai_notes_prefix: str = "[Updated by AI]: "
 
     # Observability
