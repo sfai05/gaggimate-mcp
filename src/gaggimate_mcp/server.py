@@ -522,6 +522,11 @@ async def manage_profile(
 async def analyze_shot(shot_id: str, detail: str = "summary") -> str:
     """Get comprehensive shot analysis.
 
+    All detail levels include full-resolution weight_observation and termination
+    evidence. final_weight_g remains the header value (null if absent); a last
+    positive scale observation is NOT a verified settled final cup weight.
+    Phase transition reasons describe the PREVIOUS phase's exit.
+
     Args:
         shot_id: Shot ID to analyze (will be normalized to 6 digits)
         detail: Diagnostic detail level. Options:

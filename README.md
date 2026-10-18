@@ -72,6 +72,11 @@ See [Example: Using ChatGPT to manually create profiles for Gaggimate by Dule Ra
 
 ## Changelog
 
+### 2026-10-18
+- **Weight and cutoff evidence**: All `analyze_shot` detail levels now expose full-resolution BLE weight observations with sample times, provenance and post-stop-zero warnings; `final_weight_g` retains its header-only meaning and is never replaced by a peak or inferred settled yield.
+- **Termination metadata**: Parse final and previous-phase exit reason codes and recorded brew delay from v5+ headers. Explicit extended-recording flags bracket stop separately from total log duration; legacy/unknown reasons remain explicit.
+- Regression coverage includes the saved real #58 log, legacy formats, disconnected scales, absent weights, raw spikes, unknown codes and incomplete files. See [weight/cutoff semantics](docs/weight-and-cutoff-evidence.md).
+
 ### 2026-04-22
 - **Channeling indicators v2**: Rewrote the channeling-risk computation around four independent indicators, each catching a specific physical signature, with descriptor fields separated from scored indicators.
   - **Window trim (V4)**: After the existing pressure-ramp trim, also strips leading & trailing zero-flow samples (valve-closed at entry, volumetric-cutoff at exit). Eliminates the class of false-positive HIGH ratings caused by trapped-pressure tails.

@@ -8,6 +8,9 @@ import math
 from typing import NotRequired, Optional, TypedDict
 
 from gaggimate_mcp.parsers.shot import ShotData
+from gaggimate_mcp.transformers.observations import (
+    describe_exit_reason, observe_termination, observe_weight,
+)
 
 
 class TemperatureSummary(TypedDict):
@@ -93,6 +96,9 @@ class PhaseData(TypedDict):
     """Phase data for AI analysis."""
     name: str
     phase_number: int
+    # Reason the previous phase ended when this phase was entered.
+    transition_reason_code: NotRequired[int]
+    transition_reason: NotRequired[str]
     start_time_seconds: float
     duration_seconds: float
     sample_count: int
@@ -285,6 +291,8 @@ class TransformedShot(TypedDict):
     phases: list[PhaseData]
     diagnostics: Optional[ShotDiagnostics | SummaryDiagnostics]
     detail_level: NotRequired[str]
+    weight_observation: dict
+    termination: dict
 
 
 def calculate_total_volume(samples: list[dict], interval_ms: int) -> float:
@@ -1821,6 +1829,8 @@ def transform_shot_for_ai(
         timestamp=shot.timestamp,
         duration_seconds=round(shot.duration / 1000.0 * 10) / 10,
         final_weight_g=shot.weight,
+        weight_observation=observe_weight(shot),
+        termination=observe_termination(shot),
         summary=summary_stats,
         phases=phases,
         diagnostics=diagnostics,
@@ -1869,6 +1879,8 @@ def _build_phases(
 
             pd: PhaseData = {
                 "name": phase.phase_name,
+                "transition_reason_code": phase.transition_reason,
+                "transition_reason": describe_exit_reason(phase.transition_reason),
                 "phase_number": phase.phase_number,
                 "start_time_seconds": round(start_time * 10) / 10,
                 "duration_seconds": round(duration * 10) / 10,

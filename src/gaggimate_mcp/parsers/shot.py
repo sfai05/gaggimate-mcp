@@ -102,6 +102,8 @@ class PhaseTransition:
     sample_index: int
     phase_number: int
     phase_name: str
+    # Describes why the PREVIOUS phase ended, not this phase.
+    transition_reason: int = 0
 
 
 @dataclass
@@ -121,6 +123,9 @@ class ShotData:
     samples: list[dict] = field(default_factory=list)
     phases: list[PhaseTransition] = field(default_factory=list)
     incomplete: bool = False
+    final_weight_raw: Optional[int] = None
+    final_exit_reason: Optional[int] = None
+    brew_delay_ms: Optional[int] = None
 
 
 def is_html_response(data: bytes) -> bool:
@@ -205,7 +210,12 @@ def parse_binary_shot(data: bytes, shot_id: str) -> ShotData:
 
     # Parse phase transitions (V5+)
     phases: list[PhaseTransition] = []
+    final_exit_reason = None
+    brew_delay_ms = None
     if version >= 5:
+        # Formerly reserved bytes: zero means unknown/legacy.
+        final_exit_reason = data[459]
+        brew_delay_ms = struct.unpack_from('<H', data, 460)[0]
         transition_count = struct.unpack_from('<B', data, 458)[0]
         base_offset = 110
 
@@ -219,7 +229,8 @@ def parse_binary_shot(data: bytes, shot_id: str) -> ShotData:
             phases.append(PhaseTransition(
                 sample_index=sample_index,
                 phase_number=phase_number,
-                phase_name=phase_name
+                phase_name=phase_name,
+                transition_reason=data[offset + 3],
             ))
 
     # Build field order based on mask. Iterating FIELD_BITS (rather than a
@@ -315,4 +326,7 @@ def parse_binary_shot(data: bytes, shot_id: str) -> ShotData:
         samples=samples,
         phases=phases,
         incomplete=incomplete,
+        final_weight_raw=weight_raw,
+        final_exit_reason=final_exit_reason,
+        brew_delay_ms=brew_delay_ms,
     )
