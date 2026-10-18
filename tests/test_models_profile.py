@@ -320,8 +320,9 @@ class TestProfileData:
 class TestProfile:
     """Test complete Profile model."""
 
-    def test_profile_without_id(self):
-        """Test profile creation without ID (new profile)."""
+    def test_profile_without_id(self, monkeypatch):
+        """Test profile creation with an explicitly enabled legacy marker."""
+        monkeypatch.setenv('GAGGIMATE_AI_PROFILE_SUFFIX', ' [AI]')
         profile = Profile(
             label="Test Profile [AI]",
             type="pro",
@@ -359,8 +360,9 @@ class TestProfile:
         )
         assert profile.id == "profile-123"
 
-    def test_profile_agent_created_detection(self):
-        """Test agent_created flag is set based on label suffix."""
+    def test_profile_agent_created_detection(self, monkeypatch):
+        """Test detection when a nonempty suffix is explicitly configured."""
+        monkeypatch.setenv('GAGGIMATE_AI_PROFILE_SUFFIX', ' [AI]')
         agent_profile = Profile(
             label="TestBean [AI]",
             type="pro",

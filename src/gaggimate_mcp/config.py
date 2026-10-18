@@ -72,6 +72,15 @@ class GaggimateConfig(BaseSettings):
         protocol = "https" if self.gaggimate_protocol == "wss" else "http"
         return f"{protocol}://{self.gaggimate_host}"
 
+    def is_agent_profile_label(self, label: str) -> bool:
+        """Match a configured, nonblank marker; no marker proves no ownership.
+
+        An empty suffix matches every string in Python. Disabling name markers
+        must not classify every profile as agent-created or authorise deletion.
+        """
+        suffix = self.ai_profile_suffix
+        return bool(suffix.strip()) and label.endswith(suffix)
+
     def validate_temperature(self, temp: float) -> float:
         """
         Clamp temperature to safety limits.

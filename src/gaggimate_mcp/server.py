@@ -423,6 +423,13 @@ async def manage_profile(
 
             # Safety check 3: Load the profile and verify it has AI suffix
             ai_suffix = config.ai_profile_suffix
+            if not ai_suffix.strip():
+                return json.dumps({
+                    "success": False,
+                    "error": "Cannot verify agent ownership: AI profile suffix is disabled. "
+                             "Agent deletion is blocked to protect user profiles; "
+                             "use the machine interface for an explicitly intended deletion."
+                })
             existing = await ws_client.load_profile(profile_id)
             if not existing:
                 return json.dumps({
@@ -431,7 +438,7 @@ async def manage_profile(
                 })
 
             profile_label = existing.get("label", "")
-            if not profile_label.endswith(ai_suffix):
+            if not config.is_agent_profile_label(profile_label):
                 return json.dumps({
                     "success": False,
                     "error": f"Cannot delete profile '{profile_label}'. "

@@ -159,7 +159,7 @@ class Profile(BaseModel):
         # Auto-detect from label suffix (uses default, config loaded at runtime)
         from gaggimate_mcp.config import GaggimateConfig
         config = GaggimateConfig()
-        self.agent_created = self.label.endswith(config.ai_profile_suffix)
+        self.agent_created = config.is_agent_profile_label(self.label)
         return self
 
     model_config = {

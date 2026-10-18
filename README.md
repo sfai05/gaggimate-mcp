@@ -73,6 +73,8 @@ See [Example: Using ChatGPT to manually create profiles for Gaggimate by Dule Ra
 ## Changelog
 
 ### 2026-10-18
+- **Profile deletion guard**: Empty/whitespace AI suffixes no longer mark every profile as agent-created. With name markers disabled, agent deletion fails closed even with `confirm_delete=True`; nonempty configured markers still require an exact suffix match and explicit confirmation. Clean profile names remain unchanged.
+- **Test maintenance**: Align stale temperature-clamping tests with the existing 25–100°C configuration defaults, while separately verifying custom limits. No runtime temperature bounds are changed.
 - **Weight and cutoff evidence**: All `analyze_shot` detail levels now expose full-resolution BLE weight observations with sample times, provenance and post-stop-zero warnings; `final_weight_g` retains its header-only meaning and is never replaced by a peak or inferred settled yield.
 - **Termination metadata**: Parse final and previous-phase exit reason codes and recorded brew delay from v5+ headers. Explicit extended-recording flags bracket stop separately from total log duration; legacy/unknown reasons remain explicit.
 - Regression coverage includes the saved real #58 log, legacy formats, disconnected scales, absent weights, raw spikes, unknown codes and incomplete files. See [weight/cutoff semantics](docs/weight-and-cutoff-evidence.md).
